@@ -1,0 +1,18 @@
+{
+    "name": "motion-stick-catch",
+    "version": "1.0.0",
+    "description": "Recreation of SwayJoy Motion Stick Catch reaction game",
+    "main": "index.html",
+    "scripts": {
+        "start": "npx serve ."
+    },
+    "keywords": [
+        "mediapipe",
+        "hand-tracking",
+        "motion-game",
+        "swayjoy",
+        "reaction-game"
+    ],
+    "author": "SwayJoy Recreation",
+    "license": "MIT"
+}

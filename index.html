@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Motion Stick Catch – SwayJoy Reaction Game</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Jost:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css" />
+    <!-- MediaPipe dependencies for in-browser real-time hand tracking -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+
+<body>
+    <!-- Dedicated continuous-decode video element for MediaPipe Hands -->
+    <video id="mpVideo" autoplay playsinline muted style="position: fixed; opacity: 0.001; pointer-events: none; z-index: -10; width: 640px; height: 480px; left: 0; top: 0;"></video>
+
+    <div id="gameApp" class="sc-game sc-game--home">
+        <!-- TOP PERSISTENT HUD BAR (Visible in game & modals) -->
+        <header id="topHud" class="sc-hud hidden" aria-label="Game HUD">
+            <div class="sc-brand">
+                <span class="sc-brand-icon" aria-hidden="true">✦</span>
+                <span>
+                    STICK CATCH
+                    <small id="hudStageLabel">LEVEL 1 · REFLEX CLUB</small>
+                </span>
+            </div>
+            <div class="sc-stat">
+                <small>SCORE</small>
+                <strong id="hudScore">0</strong>
+            </div>
+            <div class="sc-stat">
+                <small>DROP</small>
+                <strong><span id="hudDrop">0</span><em> / 12</em></strong>
+            </div>
+            <div class="sc-stat sc-lives">
+                <small>CHANCES</small>
+                <strong id="hudChances" aria-label="3 chances remaining">
+                    <span class="chance-dot">●</span>
+                    <span class="chance-dot">●</span>
+                    <span class="chance-dot">●</span>
+                </strong>
+            </div>
+        </header>
+
+        <!-- STAGE CANVAS & PLAY AREA -->
+        <div class="sc-stage" id="stageContainer">
+            <canvas id="gameCanvas" tabindex="-1"
+                aria-label="Stick catching play area. Controlled entirely by webcam hand tracking. Move hand to aim, close fist to catch, reopen to reset. Press P to pause."></canvas>
+
+            <!-- Active Round In-Game Toast / Feedback -->
+            <div id="roundToast" class="sc-round-message hidden" aria-live="polite">
+                <span id="toastFeedback">Watch the rack…</span>
+                <small id="toastStats" class="hidden">310 ms · 1 in a row</small>
+                <b id="toastCountdown" class="hidden">3</b>
+            </div>
+
+            <!-- OVERLAY 1: HOME MENU SCREEN -->
+            <section id="screenMenu" class="sc-overlay sc-home">
+                <img class="sc-menu-backdrop" src="assets/menu-background-v2.webp" alt="Motion Stick Catch World" width="1536" height="1024" />
+                
+                <div class="sc-home-top">
+                    <span>✦ SWAYJOY ARCADE</span>
+                    <button id="menuSoundBtn" aria-pressed="true" aria-label="Sound on">
+                        <svg class="sound-icon-on" viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"></path>
+                            <path d="M17 8q5 4 0 8M19 4q9 8 0 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+                        </svg>
+                        <svg class="sound-icon-off hidden" viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M4 9h4l5-4v14l-5-4H4z" fill="currentColor"></path>
+                            <path d="m17 9 5 6m0-6-5 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+                        </svg>
+                    </button>
+                </div>
+
+                <div class="sc-home-copy">
+                    <div class="sc-title-art">
+                        <div class="sc-title-rays" aria-hidden="true"></div>
+                        <span class="sc-spark sc-spark--one" aria-hidden="true">✦</span>
+                        <span class="sc-spark sc-spark--two" aria-hidden="true">★</span>
+                        <span class="sc-spark sc-spark--three" aria-hidden="true">✦</span>
+                        <h2 aria-label="Motion Stick Catch">
+                            <span class="sc-logo-motion" data-title="MOTION">MOTION</span>
+                            <span class="sc-logo-main" data-title="STICK CATCH">STICK CATCH</span>
+                        </h2>
+                    </div>
+
+                    <p class="sc-menu-tagline">Ready, steady… <strong>CATCH!</strong></p>
+                    <span class="sc-choose-label" id="sc-choose-label">CHOOSE YOUR CHALLENGE</span>
+
+                    <div class="sc-difficulty" role="radiogroup" aria-labelledby="sc-choose-label">
+                        <button class="sc-level-btn sc-level--easy" data-level="easy" aria-label="Warm-up" aria-pressed="false">
+                            <span class="sc-level-star" aria-hidden="true">★</span>
+                            <span class="sc-level-copy">
+                                <strong>Warm-up</strong>
+                                <small>Find your rhythm</small>
+                            </span>
+                            <span class="sc-level-check" aria-hidden="true">›</span>
+                        </button>
+                        <button class="sc-level-btn sc-level--normal" data-level="normal" aria-label="Classic" aria-pressed="true">
+                            <span class="sc-level-star" aria-hidden="true">★</span>
+                            <span class="sc-level-copy">
+                                <strong>Classic</strong>
+                                <small>Test your reflexes</small>
+                            </span>
+                            <span class="sc-level-check" aria-hidden="true">✓</span>
+                        </button>
+                        <button class="sc-level-btn sc-level--fast" data-level="fast" aria-label="Lightning" aria-pressed="false">
+                            <span class="sc-level-star" aria-hidden="true">ϟ</span>
+                            <span class="sc-level-copy">
+                                <strong>Lightning</strong>
+                                <small>Catch at full speed</small>
+                            </span>
+                            <span class="sc-level-check" aria-hidden="true">›</span>
+                        </button>
+                    </div>
+
+                    <button id="playWithCameraBtn" class="sc-play-button">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="m8 4 12 8-12 8z"></path>
+                        </svg>
+                        <span id="playCamBtnText">PLAY WITH CAMERA</span>
+                    </button>
+
+                    <button id="playWithMouseBtn" class="sc-manual-button">
+                        Play with mouse / touch <span aria-hidden="true">›</span>
+                    </button>
+
+                    <small class="sc-privacy">Camera tracking stays on your device.</small>
+                    <p id="menuStatusMsg" class="sc-loading hidden" role="status"></p>
+                    <p id="menuErrorMsg" class="sc-error hidden" role="alert"></p>
+                </div>
+
+                <div class="sc-home-bottom" aria-hidden="true">
+                    <span>12 DROPS</span>
+                    <i>·</i>
+                    <span>3 CHANCES</span>
+                    <i>·</i>
+                    <span>QUICK HANDS WIN</span>
+                </div>
+            </section>
+
+            <!-- OVERLAY 2: "OPEN. AIM. GRAB." INSTRUCTION / PRE-ROUND CARD -->
+            <section id="screenReady" class="sc-overlay sc-centered hidden">
+                <div class="sc-card sc-card--ready">
+                    <div class="sc-card-emblem" aria-hidden="true">
+                        <svg viewBox="0 0 48 48">
+                            <path d="M14 40 5 25q-3-7 3-6l7 7V11q0-6 5-4v14-17q5-5 6 1v16-14q6-4 6 3v13-10q6-4 6 3v15q0 13-15 13z"></path>
+                        </svg>
+                        <span>✦</span>
+                    </div>
+                    <span class="sc-eyebrow">YOUR HAND IS THE CONTROLLER</span>
+                    <h2>OPEN. AIM. GRAB.</h2>
+                    <p id="readyCardDesc">
+                        Keep your hand in view. Move to aim, then close your fist to catch a falling stick.
+                    </p>
+
+                    <div id="readyAutostartBox" class="sc-auto-start" role="status" aria-live="polite">
+                        <span id="readyAutostartTitle">SHOW ONE HAND TO START</span>
+                        <b id="readyAutostartCount" class="hidden">3</b>
+                        <small id="readyAutostartSub">Keep your hand in view. The countdown will begin automatically.</small>
+                    </div>
+
+                    <p id="readyErrorMsg" class="sc-error hidden" role="alert"></p>
+                    <button id="readyRetryBtn" class="sc-retry-btn hidden">Retry camera</button>
+
+                    <button id="readyPlayNowBtn" class="sc-primary" style="margin-bottom: 12px;">PLAY WITH CAMERA NOW</button>
+                </div>
+            </section>
+
+            <!-- OVERLAY 3: PAUSE MODAL -->
+            <section id="screenPause" class="sc-overlay sc-centered hidden">
+                <div class="sc-card sc-card--pause">
+                    <div class="sc-card-emblem" aria-hidden="true">
+                        <svg viewBox="0 0 48 48">
+                            <rect x="11" y="8" width="9" height="32" rx="3"></rect>
+                            <rect x="28" y="8" width="9" height="32" rx="3"></rect>
+                        </svg>
+                        <span>✦</span>
+                    </div>
+                    <span class="sc-eyebrow">TAKE YOUR TIME</span>
+                    <h2>Paused</h2>
+                    <p id="pauseMsg">The round is paused. Resume when you are ready.</p>
+                    <p id="pauseErrorMsg" class="sc-error hidden" role="alert"></p>
+
+                    <div id="pauseAutostartBox" class="sc-auto-start hidden" role="status" aria-live="polite">
+                        <span id="pauseAutostartTitle">SHOW ONE HAND TO CONTINUE</span>
+                        <b id="pauseAutostartCount" class="hidden">3</b>
+                        <small id="pauseAutostartSub">Your round will resume automatically after 3, 2, 1.</small>
+                    </div>
+
+                    <button id="resumeGameBtn" class="sc-primary">Resume game</button>
+                    <button id="pauseBackMenuBtn" class="sc-text">Back to menu</button>
+                </div>
+            </section>
+
+            <!-- OVERLAY 4: RESULTS / GAME OVER MODAL -->
+            <section id="screenResult" class="sc-overlay sc-centered hidden">
+                <div class="sc-card sc-result">
+                    <div class="sc-card-emblem sc-card-emblem--gold" aria-hidden="true">
+                        <svg viewBox="0 0 48 48">
+                            <path d="m24 4 6 12 14 2-10 10 2 15-12-7-12 7 2-15L4 18l14-2z"></path>
+                        </svg>
+                        <span>✦</span>
+                    </div>
+                    <span id="resultEyebrow" class="sc-eyebrow">LEVEL 1 COMPLETE</span>
+                    <h2 id="resultTitle">Lightning hands!</h2>
+                    <strong class="sc-final-score">
+                        <span id="resultFinalScore">0</span>
+                        <small>POINTS</small>
+                    </strong>
+
+                    <div class="sc-result-stats">
+                        <span>
+                            <b id="resultCaughtStat">0/12</b>
+                            Caught
+                        </span>
+                        <span>
+                            <b id="resultReactionStat">—</b>
+                            Average catch
+                        </span>
+                        <span>
+                            <b id="resultBestScoreStat">0</b>
+                            <span id="resultBestLevelLabel">Best · Classic</span>
+                        </span>
+                    </div>
+
+                    <div class="sc-auto-start sc-auto-start--result" role="status" aria-live="polite">
+                        <span id="resultNextLabel">NEXT: LEVEL 2</span>
+                        <b id="resultCountVal" class="hidden">3</b>
+                        <small id="resultCountSub">Show one hand to begin the countdown.</small>
+                    </div>
+
+                    <button id="resultContinueBtn" class="sc-primary" style="margin-bottom: 12px;">CONTINUE</button>
+                    <button id="resultBackMenuBtn" class="sc-text">Back to menu</button>
+                </div>
+            </section>
+        </div>
+
+        <!-- BOTTOM CONSOLE / CONTROLLER DOCK (Visible during game & overlays) -->
+        <footer id="bottomConsole" class="sc-console hidden">
+            <!-- Mirrored Webcam Container -->
+            <div id="cameraBox" class="sc-camera">
+                <video id="webcamVideo" muted playsinline aria-label="Mirrored camera preview"></video>
+                <span>LIVE · ON DEVICE</span>
+            </div>
+
+            <!-- Contextual Instructions -->
+            <div class="sc-instructions">
+                <strong id="dockPromptTitle">Show one hand to the camera</strong>
+                <span id="dockPromptSub">Keep your whole hand visible. Reopen between grabs.</span>
+                <small id="dockLevelDetails">Classic · 12 drops · 3 chances</small>
+            </div>
+
+            <!-- Console Toolbar Buttons -->
+            <div class="sc-tools">
+                <button id="dockCamToggleBtn" aria-pressed="true">Hide camera</button>
+                <button id="dockPauseBtn">Pause</button>
+                <button id="dockSoundBtn" aria-pressed="true">Sound on</button>
+                <button id="dockMenuBtn">Menu</button>
+            </div>
+        </footer>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
