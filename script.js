@@ -1,6 +1,6 @@
 /**
- * Motion Stick Catch — Exact Recreation of SwayJoy Reaction Game
- * Core Engine, MediaPipe Hand Gesture Recognition, Web Audio Synthesizer & Canvas Renderer
+ * Motion Stick Catch — SwayJoy Recreation Game
+ * Full-screen layout, seamless flow, and robust real-time webcam hand tracking.
  */
 
 // ============================================================================
@@ -69,7 +69,7 @@ const DIFFICULTIES = {
 const RACK_SCALE = 0.7;
 const BASE_LANES = [0.18, 0.34, 0.5, 0.66, 0.82];
 const STICK_LANES = BASE_LANES.map(x => 0.5 + (x - 0.5) * RACK_SCALE);
-const STICK_HEIGHT_RATIO = 0.2;
+const STICK_HEIGHT_RATIO = 0.20;
 
 class StickCatchEngine {
     constructor(randomFn = Math.random) {
@@ -132,7 +132,7 @@ class StickCatchEngine {
         this.phase = 'waiting';
         this.rod = null;
         this.feedback = 'Watch the rack…';
-        this.remaining = 0.9 + this.random() * 1.5;
+        this.remaining = 0.85 + this.random() * 1.2;
     }
 
     drop() {
@@ -152,11 +152,11 @@ class StickCatchEngine {
     }
 
     grab(x, y) {
-        if (this.paused || this.phase !== 'falling' || this.time - this.lastAttempt < 0.22 || !Number.isFinite(x) || !Number.isFinite(y)) {
+        if (this.paused || this.phase !== 'falling' || !Number.isFinite(x) || !Number.isFinite(y)) {
             return false;
         }
         this.lastAttempt = this.time;
-        this.grip = { x, y, until: this.time + 0.11 };
+        this.grip = { x, y, until: this.time + 0.16 };
         return this.checkCatch();
     }
 
@@ -168,7 +168,10 @@ class StickCatchEngine {
         if (!this.grip || this.phase !== 'falling' || !this.rod) return false;
         const { x, y } = this.grip;
         // Collision bounding box aligned with stick dimensions
-        if (Math.abs(x - this.rod.x) <= 0.075 && y >= this.rod.y - 0.045 && y <= this.rod.y + 0.2 + 0.045) {
+        const xDiff = Math.abs(x - this.rod.x);
+        const yInRange = y >= (this.rod.y - 0.05) && y <= (this.rod.y + STICK_HEIGHT_RATIO + 0.05);
+
+        if (xDiff <= 0.085 && yInRange) {
             const reactionMs = Math.round((this.time - this.droppedAt) * 1000);
             this.caught++;
             this.streak++;
@@ -190,7 +193,6 @@ class StickCatchEngine {
             this.finishDrop(`Nice catch! +${points}`);
             return true;
         }
-        this.feedback = 'Open, aim, then grab again!';
         return false;
     }
 
@@ -220,10 +222,11 @@ class StickCatchEngine {
 
             if (this.checkCatch()) return;
 
-            if (this.rod.y > 1.04) {
+            // Bottom floor drop threshold: floor platform is at 0.94, so stick hits ground at 0.95
+            if (this.rod.y >= 0.95) {
                 this.lives--;
                 this.streak = 0;
-                this.lastResult = { caught: false, x: this.rod.x, y: 1 };
+                this.lastResult = { caught: false, x: this.rod.x, y: 0.95 };
                 this.finishDrop('Missed! Stay ready for the next one.');
             }
             return;
@@ -251,114 +254,7 @@ class StickCatchEngine {
     }
 }
 
-// ============================================================================
-// 3. HAND GESTURE TRACKER (Real-Time Pose & Smoothing)
-// ============================================================================
-const clampRange = (val, min = 0.04, max = 0.96) => Math.min(max, Math.max(min, val));
-const landmarkDist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, (a.z || 0) - (b.z || 0));
-
-function analyzeHandPose(landmarks) {
-    if (!landmarks || landmarks.length !== 21 || landmarks.some(l => !l || !Number.isFinite(l.x) || !Number.isFinite(l.y))) {
-        return null;
-    }
-    // Filter tiny or erroneous hand detections
-    if (landmarkDist(landmarks[0], landmarks[9]) < 0.012) return null;
-
-    let curledCount = 0;
-    let openCount = 0;
-
-    // Evaluate Index (5..8), Middle (9..12), Ring (13..16), Pinky (17..20)
-    for (const mcpIdx of [5, 9, 13, 17]) {
-        const mcp = landmarks[mcpIdx];
-        const pip = landmarks[mcpIdx + 1];
-        const tip = landmarks[mcpIdx + 3];
-
-        const vPip = [mcp.x - pip.x, mcp.y - pip.y, (mcp.z || 0) - (pip.z || 0)];
-        const vTip = [tip.x - pip.x, tip.y - pip.y, (tip.z || 0) - (pip.z || 0)];
-
-        const dot = vPip.reduce((acc, v, i) => acc + v * vTip[i], 0);
-        const cosAngle = dot / Math.max(1e-5, Math.hypot(...vPip) * Math.hypot(...vTip));
-        const extRatio = landmarkDist(tip, landmarks[0]) / Math.max(0.001, landmarkDist(pip, landmarks[0]));
-
-        if (cosAngle < -0.65 && extRatio > 1.12) {
-            openCount++;
-        }
-        if (extRatio < 1.02 || cosAngle > -0.2) {
-            curledCount++;
-        }
-    }
-
-    const palmIndices = [0, 5, 9, 13, 17];
-    const avgX = palmIndices.reduce((sum, idx) => sum + landmarks[idx].x, 0) / 5;
-    const avgY = palmIndices.reduce((sum, idx) => sum + landmarks[idx].y, 0) / 5;
-
-    // Mirrored camera coordinates with sensitivity boost
-    const normX = clampRange(0.5 + (0.5 - avgX) * 1.4);
-    const normY = clampRange(0.5 + (avgY - 0.5) * 1.4);
-
-    const pose = (curledCount >= 3 && openCount <= 1) ? 'fist' : (openCount >= 3 ? 'open' : 'neutral');
-
-    return { x: normX, y: normY, pose };
-}
-
-class HandGestureTracker {
-    constructor() {
-        this.reset();
-    }
-
-    reset() {
-        this.armed = false;
-        this.candidate = '';
-        this.since = 0;
-        this.lastAt = null;
-        this.position = null;
-    }
-
-    read(landmarks, timeNow) {
-        const analyzed = analyzeHandPose(landmarks);
-        if (!analyzed || (this.lastAt !== null && timeNow - this.lastAt > 600)) {
-            this.reset();
-            if (!analyzed) return { tracked: false, grab: false };
-        }
-
-        const delta = this.lastAt === null ? 33 : Math.max(0, timeNow - this.lastAt);
-        this.lastAt = timeNow;
-
-        // Exponential coordinate smoothing for natural feel
-        const smoothAlpha = 1 - Math.exp(-delta / 32);
-        this.position = this.position ? {
-            x: this.position.x + (analyzed.x - this.position.x) * smoothAlpha,
-            y: this.position.y + (analyzed.y - this.position.y) * smoothAlpha
-        } : { x: analyzed.x, y: analyzed.y };
-
-        if (analyzed.pose !== this.candidate) {
-            this.candidate = analyzed.pose;
-            this.since = timeNow;
-        }
-
-        let didGrab = false;
-        // Arming rule: open hand visible for at least 65ms
-        if (analyzed.pose === 'open' && timeNow - this.since >= 65) {
-            this.armed = true;
-        }
-        // Grab trigger: armed and fist closed for at least 32ms
-        if (analyzed.pose === 'fist' && timeNow - this.since >= 32 && this.armed) {
-            didGrab = true;
-            this.armed = false; // Disarm until reopened!
-        }
-
-        return {
-            x: this.position.x,
-            y: this.position.y,
-            tracked: true,
-            fist: analyzed.pose === 'fist',
-            armed: this.armed,
-            grab: didGrab
-        };
-    }
-}
-
-// Countdown timer helper for pre-round and pause-resume
+// Countdown timer helper for pre-round and auto-advance
 class AutoStartTimer {
     constructor() {
         this.cancel();
@@ -368,37 +264,19 @@ class AutoStartTimer {
         this.phase = 'idle';
         this.remaining = 3;
         this.stage = 1;
-        this.handTime = 0;
     }
 
     request(stage = 1) {
         this.stage = stage;
         this.phase = 'waiting';
         this.remaining = 3;
-        this.handTime = 0;
     }
 
-    interrupt() {
-        if (this.phase !== 'idle') {
-            this.phase = 'waiting';
-            this.remaining = 3;
-            this.handTime = 0;
-        }
-    }
-
-    update(dt, { requiresHand = false, handPresent = false, blocked = false } = {}) {
+    update(dt) {
         if (this.phase === 'idle') return false;
-        if (blocked || (requiresHand && !handPresent)) {
-            this.interrupt();
-            return false;
-        }
         dt = Math.max(0, Math.min(0.05, dt));
         if (this.phase === 'waiting') {
-            this.handTime += dt;
-            if (!requiresHand || this.handTime >= 0.15) {
-                this.phase = 'countdown';
-            }
-            return false;
+            this.phase = 'countdown';
         }
         this.remaining = Math.max(0, this.remaining - dt);
         if (this.remaining > 1e-6) return false;
@@ -408,7 +286,7 @@ class AutoStartTimer {
 }
 
 // ============================================================================
-// 4. CANVAS RENDERING ENGINE (World, Dropper Rack, Sticks, Hand Glove)
+// 3. CANVAS RENDERING ENGINE
 // ============================================================================
 function fillRoundRect(ctx, x, y, w, h, radius, fillStyle) {
     ctx.fillStyle = fillStyle;
@@ -459,7 +337,7 @@ function renderScene(canvas, engine, cursor, timeNow, reducedMotion = false) {
     const height = canvas.clientHeight;
     if (!width || !height) return;
 
-    // HiDPI backing store
+    // HiDPI backing store matching viewport
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
         canvas.width = Math.round(width * dpr);
@@ -502,7 +380,7 @@ function renderScene(canvas, engine, cursor, timeNow, reducedMotion = false) {
     ctx.fillRect(0, height * 0.94, width, height * 0.06);
     ctx.fillStyle = 'rgba(144, 107, 180, 0.15)';
     ctx.beginPath();
-    ctx.ellipse(width / 2, height * 0.945, width * 0.37, height * 0.015, 0, 0, Math.PI * 2);
+    ctx.ellipse(width / 2, height * 0.945, width * 0.38, height * 0.015, 0, 0, Math.PI * 2);
     ctx.fill();
 
     // 4. Overhead Yellow Dropper Rack
@@ -524,8 +402,13 @@ function renderScene(canvas, engine, cursor, timeNow, reducedMotion = false) {
         ctx.stroke();
     }
 
-    // Yellow Bar
-    const rackGrad = ctx.createLinearGradient(0, height * 0.165, 0, height * 0.225);
+    // Overhead Yellow Bar
+    const rackWidth = width * 0.82 * RACK_SCALE;
+    const rackX = width * 0.5 - rackWidth / 2;
+    const rackY = height * 0.165;
+    const rackH = height * 0.061;
+
+    const rackGrad = ctx.createLinearGradient(0, rackY, 0, rackY + rackH);
     rackGrad.addColorStop(0, '#ffe88a');
     rackGrad.addColorStop(0.45, '#ffd049');
     rackGrad.addColorStop(1, '#d99818');
@@ -534,15 +417,7 @@ function renderScene(canvas, engine, cursor, timeNow, reducedMotion = false) {
     ctx.shadowColor = 'rgba(132, 109, 52, 0.2)';
     ctx.shadowBlur = 16;
     ctx.shadowOffsetY = 7;
-    fillRoundRect(
-        ctx,
-        width * (0.5 - 0.41 * RACK_SCALE),
-        height * 0.165,
-        width * 0.82 * RACK_SCALE,
-        height * 0.061,
-        10,
-        rackGrad
-    );
+    fillRoundRect(ctx, rackX, rackY, rackWidth, rackH, 10, rackGrad);
     ctx.restore();
 
     // Inscribed bar text
@@ -550,10 +425,10 @@ function renderScene(canvas, engine, cursor, timeNow, reducedMotion = false) {
     const fontSize = Math.max(9, Math.min(14, width * 0.014)) * RACK_SCALE;
     ctx.font = `700 ${fontSize}px Jost, sans-serif`;
     ctx.textAlign = 'center';
-    ctx.fillText('S W A Y J O Y   /   R E F L E X   C L U B', width / 2, height * 0.202);
+    ctx.fillText('S W A Y J O Y   /   R E F L E X   C L U B', width / 2, rackY + rackH * 0.62);
 
     // Hanging Sticks on rack
-    const stickWidth = Math.max(15, Math.min(35, width * 0.043));
+    const stickWidth = Math.max(16, Math.min(38, width * 0.038));
     const stickHeight = height * STICK_HEIGHT_RATIO;
     for (const laneIdx of engine.available) {
         const floatSway = (reducedMotion || engine.phase === 'falling') ? 0 : Math.sin(timeNow / 1100 + laneIdx) * 0.002;
@@ -607,7 +482,7 @@ function renderScene(canvas, engine, cursor, timeNow, reducedMotion = false) {
         ctx.save();
         ctx.translate(cx, cy);
 
-        // Circular reticle ring
+        // Circular reticle ring: dashed circle when open, solid when grabbing/fist
         ctx.strokeStyle = cursor.fist ? '#db6938' : '#147f78';
         ctx.fillStyle = cursor.fist ? 'rgba(255, 227, 171, 0.81)' : 'rgba(255, 255, 255, 0.68)';
         ctx.lineWidth = 3;
@@ -669,45 +544,44 @@ function renderScene(canvas, engine, cursor, timeNow, reducedMotion = false) {
 }
 
 // ============================================================================
-// 5. APPLICATION CONTROLLER & INTEGRATION
+// 4. APPLICATION CONTROLLER & INTEGRATION
 // ============================================================================
 class MotionStickCatchApp {
     constructor() {
         this.engine = new StickCatchEngine();
-        this.tracker = new HandGestureTracker();
         this.readyTimer = new AutoStartTimer();
-        this.pauseTimer = new AutoStartTimer();
 
         // UI State
-        this.screen = 'menu'; // 'menu' | 'ready' | 'play' | 'over'
+        this.screen = 'menu'; // 'menu' | 'play' | 'over'
         this.inputMode = 'camera';
         this.selectedDifficulty = 'normal';
         this.cameraActive = false;
         this.cameraVisible = true;
         this.handTracked = false;
-        this.handArmed = false;
         this.isFist = false;
         this.cameraError = '';
-        this.cameraStatus = '';
-        this.pauseReason = '';
 
-        this.cursor = { x: 0.5, y: 0.65, visible: false, fist: false };
-        this.activeKeys = new Set();
-        this.mouseGrabTimeout = 0;
+        // Reticle coordinates (screen pixels and normalized canvas coordinates)
+        this.cursor = {
+            screenX: window.innerWidth / 2,
+            screenY: window.innerHeight * 0.65,
+            targetX: window.innerWidth / 2,
+            targetY: window.innerHeight * 0.65,
+            x: 0.5,
+            y: 0.65,
+            canvasPxX: window.innerWidth / 2,
+            canvasPxY: window.innerHeight * 0.65,
+            visible: false,
+            fist: false,
+            isGrabbing: false
+        };
+
         this.lastHandTimestamp = -Infinity;
         this.lastFrameTime = 0;
         this.prevPhase = 'idle';
 
-        this.calibrationState = {
-            phase: 'waiting', // 'waiting' | 'countdown' | 'started'
-            holdStartTime: null,
-            countdownStartTime: null,
-            currentCount: 3
-        };
-
         // MediaPipe Camera & Hands instance
         this.mediaPipeHands = null;
-        this.cameraInstance = null;
 
         this.cacheDOM();
         this.bindEvents();
@@ -728,6 +602,7 @@ class MotionStickCatchApp {
             hudScore: document.getElementById('hudScore'),
             hudDrop: document.getElementById('hudDrop'),
             hudChances: document.getElementById('hudChances'),
+            hudFullscreenBtn: document.getElementById('hudFullscreenBtn'),
 
             stageContainer: document.getElementById('stageContainer'),
             canvas: document.getElementById('gameCanvas'),
@@ -748,25 +623,9 @@ class MotionStickCatchApp {
             menuErrorMsg: document.getElementById('menuErrorMsg'),
 
             screenReady: document.getElementById('screenReady'),
-            readyCardDesc: document.getElementById('readyCardDesc'),
-            readyAutostartBox: document.getElementById('readyAutostartBox'),
-            readyAutostartTitle: document.getElementById('readyAutostartTitle'),
-            readyAutostartCount: document.getElementById('readyAutostartCount'),
-            readyAutostartSub: document.getElementById('readyAutostartSub'),
-            readyErrorMsg: document.getElementById('readyErrorMsg'),
-            readyRetryBtn: document.getElementById('readyRetryBtn'),
-            readyPlayNowBtn: document.getElementById('readyPlayNowBtn'),
-            readyUseMouseBtn: document.getElementById('readyUseMouseBtn'),
-
             screenPause: document.getElementById('screenPause'),
             pauseMsg: document.getElementById('pauseMsg'),
-            pauseErrorMsg: document.getElementById('pauseErrorMsg'),
-            pauseAutostartBox: document.getElementById('pauseAutostartBox'),
-            pauseAutostartTitle: document.getElementById('pauseAutostartTitle'),
-            pauseAutostartCount: document.getElementById('pauseAutostartCount'),
-            pauseAutostartSub: document.getElementById('pauseAutostartSub'),
             resumeGameBtn: document.getElementById('resumeGameBtn'),
-            pauseUseMouseBtn: document.getElementById('pauseUseMouseBtn'),
             pauseBackMenuBtn: document.getElementById('pauseBackMenuBtn'),
 
             screenResult: document.getElementById('screenResult'),
@@ -778,10 +637,7 @@ class MotionStickCatchApp {
             resultBestScoreStat: document.getElementById('resultBestScoreStat'),
             resultBestLevelLabel: document.getElementById('resultBestLevelLabel'),
             resultNextLabel: document.getElementById('resultNextLabel'),
-            resultCountVal: document.getElementById('resultCountVal'),
-            resultCountSub: document.getElementById('resultCountSub'),
             resultContinueBtn: document.getElementById('resultContinueBtn'),
-            resultMouseBtn: document.getElementById('resultMouseBtn'),
             resultBackMenuBtn: document.getElementById('resultBackMenuBtn'),
 
             bottomConsole: document.getElementById('bottomConsole'),
@@ -799,7 +655,36 @@ class MotionStickCatchApp {
     }
 
     bindEvents() {
+        // Window resize sync
         window.addEventListener('resize', () => this.resizeCanvas());
+
+        // Native Fullscreen Toggle
+        if (this.dom.hudFullscreenBtn) {
+            this.dom.hudFullscreenBtn.addEventListener('click', () => {
+                if (!document.fullscreenElement) {
+                    if (document.documentElement.requestFullscreen) {
+                        document.documentElement.requestFullscreen().catch(() => {});
+                    } else if (document.documentElement.webkitRequestFullscreen) {
+                        document.documentElement.webkitRequestFullscreen();
+                    }
+                } else {
+                    if (document.exitFullscreen) {
+                        document.exitFullscreen().catch(() => {});
+                    } else if (document.webkitExitFullscreen) {
+                        document.webkitExitFullscreen();
+                    }
+                }
+            });
+        }
+
+        document.addEventListener('fullscreenchange', () => {
+            const isFs = !!document.fullscreenElement;
+            const enterIcon = this.dom.hudFullscreenBtn?.querySelector('.fs-icon-enter');
+            const exitIcon = this.dom.hudFullscreenBtn?.querySelector('.fs-icon-exit');
+            if (enterIcon) enterIcon.classList.toggle('hidden', isFs);
+            if (exitIcon) exitIcon.classList.toggle('hidden', !isFs);
+            this.resizeCanvas();
+        });
 
         // Sound Toggle
         const toggleSound = () => {
@@ -823,29 +708,15 @@ class MotionStickCatchApp {
             });
         });
 
-        // Menu Navigation: immediately enter active gameplay arena on click
+        // Menu Navigation: Transition directly to active gameplay arena immediately
         this.dom.playWithCameraBtn.addEventListener('click', () => this.startCameraMode());
-        this.dom.playWithMouseBtn.addEventListener('click', () => this.startCameraMode());
+        this.dom.playWithMouseBtn.addEventListener('click', () => this.startMouseMode());
 
-        // Ready Modal (if accessed)
-        if (this.dom.readyRetryBtn) {
-            this.dom.readyRetryBtn.addEventListener('click', () => {
-                if (this.dom.readyRetryBtn) this.dom.readyRetryBtn.classList.add('hidden');
-                if (this.dom.readyErrorMsg) this.dom.readyErrorMsg.classList.add('hidden');
-                this.startCameraMode();
-            });
-        }
-        if (this.dom.readyPlayNowBtn) {
-            this.dom.readyPlayNowBtn.addEventListener('click', () => {
-                this.startLevel(1, true);
-            });
-        }
-
-        // Pause Modal
+        // Pause Modal buttons (manual pause only)
         this.dom.resumeGameBtn.addEventListener('click', () => this.resumeGame());
         this.dom.pauseBackMenuBtn.addEventListener('click', () => this.goToMenu());
 
-        // Result Modal
+        // Result Modal buttons
         if (this.dom.resultContinueBtn) {
             this.dom.resultContinueBtn.addEventListener('click', () => {
                 this.startLevel(this.engine.nextStage, true);
@@ -871,20 +742,89 @@ class MotionStickCatchApp {
 
         this.dom.dockMenuBtn.addEventListener('click', () => this.goToMenu());
 
-        // Keyboard: ONLY Pause key (KeyP / Escape). All mouse and arrow controls are disabled!
+        // Keyboard: ONLY manual Pause key (KeyP / Escape)
         window.addEventListener('keydown', e => this.handleKeyDown(e));
 
-        document.addEventListener('visibilitychange', () => {
-            if (document.hidden && this.screen === 'play' && !this.engine.paused) {
-                this.pauseGame('You switched away. Resume when you are ready.', false);
+        // Fallback Mouse and Touch Handling:
+        // Ensure mouse/touch move and mousedown/mouseup update the exact same reticle coordinates and grab state
+        const updateFromPointer = (clientX, clientY) => {
+            this.cursor.targetX = clientX;
+            this.cursor.targetY = clientY;
+            this.cursor.screenX = clientX;
+            this.cursor.screenY = clientY;
+            this.cursor.visible = true;
+            this.updateCanvasCursorFromScreen();
+        };
+
+        window.addEventListener('mousemove', e => {
+            if (this.screen === 'play') {
+                updateFromPointer(e.clientX, e.clientY);
             }
         });
+
+        window.addEventListener('touchmove', e => {
+            if (this.screen === 'play' && e.touches && e.touches[0]) {
+                updateFromPointer(e.touches[0].clientX, e.touches[0].clientY);
+            }
+        }, { passive: true });
+
+        const handlePointerDown = (clientX, clientY) => {
+            if (this.screen !== 'play') return;
+            updateFromPointer(clientX, clientY);
+            this.cursor.fist = true;
+            this.cursor.isGrabbing = true;
+            this.isFist = true;
+            this.engine.grab(this.cursor.x, this.cursor.y);
+        };
+
+        const handlePointerUp = () => {
+            if (this.screen !== 'play') return;
+            this.cursor.fist = false;
+            this.cursor.isGrabbing = false;
+            this.isFist = false;
+            this.engine.cancelGrab();
+        };
+
+        window.addEventListener('mousedown', e => {
+            if (e.target.closest('button')) return;
+            handlePointerDown(e.clientX, e.clientY);
+        });
+
+        window.addEventListener('mouseup', () => {
+            handlePointerUp();
+        });
+
+        window.addEventListener('touchstart', e => {
+            if (e.target.closest('button')) return;
+            if (e.touches && e.touches[0]) {
+                handlePointerDown(e.touches[0].clientX, e.touches[0].clientY);
+            }
+        }, { passive: true });
+
+        window.addEventListener('touchend', () => {
+            handlePointerUp();
+        });
+    }
+
+    updateCanvasCursorFromScreen() {
+        const rect = this.dom.canvas.getBoundingClientRect();
+        if (rect.width > 0 && rect.height > 0) {
+            const pxX = Math.max(0, Math.min(rect.width, this.cursor.screenX - rect.left));
+            const pxY = Math.max(0, Math.min(rect.height, this.cursor.screenY - rect.top));
+            this.cursor.x = pxX / rect.width;
+            this.cursor.y = pxY / rect.height;
+            this.cursor.canvasPxX = pxX;
+            this.cursor.canvasPxY = pxY;
+        }
     }
 
     resizeCanvas() {
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        this.dom.canvas.width = Math.round(this.dom.canvas.clientWidth * dpr);
-        this.dom.canvas.height = Math.round(this.dom.canvas.clientHeight * dpr);
+        const width = this.dom.canvas.clientWidth || window.innerWidth;
+        const height = this.dom.canvas.clientHeight || window.innerHeight;
+        this.dom.canvas.width = Math.round(width * dpr);
+        this.dom.canvas.height = Math.round(height * dpr);
+        this.updateCanvasCursorFromScreen();
     }
 
     loadBestScores() {
@@ -918,22 +858,10 @@ class MotionStickCatchApp {
     // ========================================================================
     // MODE INITIATION & TRANSITIONS
     // ========================================================================
-    startMouseMode() {
-        this.startCameraMode();
-    }
-
-    initRoute() {
-        const hash = window.location.hash.toLowerCase();
-        const search = window.location.search.toLowerCase();
-        if (hash === '#play' || search.includes('camera') || search.includes('play')) {
-            this.startCameraMode();
-        }
-    }
-
     startCameraMode() {
         this.inputMode = 'camera';
-        // Specification 1: Transition directly to the active gameplay arena immediately.
-        // Trigger the 3-2-1 countdown right away and start dropping sticks without waiting.
+        // Specification 2: Transition directly to the active gameplay arena immediately.
+        // Trigger the 3-2-1 countdown right away and start dropping sticks automatically.
         this.startLevel(1, true);
 
         // Start webcam and hand tracking in background without delaying gameplay
@@ -944,20 +872,17 @@ class MotionStickCatchApp {
         }
     }
 
-    enterCalibration() {
-        this.screen = 'ready';
-        this.inputMode = 'camera';
-        this.calibrationState = {
-            phase: 'waiting',
-            holdStartTime: null,
-            countdownStartTime: null,
-            currentCount: 3
-        };
-        this.lastHandTimestamp = -Infinity;
-        this.cursor.visible = false;
-        this.cameraVisible = true;
-        if (this.dom.readyErrorMsg) this.dom.readyErrorMsg.classList.add('hidden');
-        this.updateUI();
+    startMouseMode() {
+        this.inputMode = 'mouse';
+        this.startLevel(1, true);
+    }
+
+    initRoute() {
+        const hash = window.location.hash.toLowerCase();
+        const search = window.location.search.toLowerCase();
+        if (hash === '#play' || search.includes('camera') || search.includes('play')) {
+            this.startCameraMode();
+        }
     }
 
     startLevel(stage = 1, showCountdown = true) {
@@ -965,30 +890,19 @@ class MotionStickCatchApp {
         this.cursor.visible = true;
         this.cursor.fist = false;
         this.cursor.isGrabbing = false;
-        this.pauseTimer.cancel();
-        this.tracker.reset();
-        this.activeKeys.clear();
         this.engine.start(this.selectedDifficulty, stage, showCountdown);
-        this.dom.canvas.focus({ preventScroll: true });
+        this.prevPhase = this.engine.phase;
+        this.updateCanvasCursorFromScreen();
         this.updateUI();
-        sfx.play('drop');
     }
 
-    pauseGame(reasonText, autoResumeWhenHand = false) {
-        if (this.screen !== 'play') return;
-        this.pauseTimer.cancel();
-        if (autoResumeWhenHand) {
-            this.pauseTimer.request(this.engine.stage);
-        }
+    pauseGame(reasonText) {
         this.engine.pause();
-        this.pauseReason = reasonText;
         this.dom.pauseMsg.textContent = reasonText;
         this.updateUI();
     }
 
     resumeGame() {
-        this.pauseTimer.cancel();
-        this.tracker.reset();
         this.engine.resume();
         this.dom.canvas.focus({ preventScroll: true });
         this.updateUI();
@@ -996,21 +910,16 @@ class MotionStickCatchApp {
 
     goToMenu() {
         this.readyTimer.cancel();
-        this.pauseTimer.cancel();
         this.stopCamera();
         this.inputMode = 'camera';
         this.cursor.visible = false;
         this.screen = 'menu';
-        if (this.calibrationState) {
-            this.calibrationState.phase = 'waiting';
-            this.calibrationState.holdStartTime = null;
-        }
         this.engine.reset(this.selectedDifficulty);
         this.updateUI();
     }
 
     // ========================================================================
-    // INPUT HANDLERS (Keyboard ONLY for Pause/Resume. All gameplay input is CV)
+    // INPUT HANDLERS
     // ========================================================================
     handleKeyDown(e) {
         if (e.code === 'KeyP' || e.code === 'Escape') {
@@ -1048,7 +957,7 @@ class MotionStickCatchApp {
             console.warn('FacingMode webcam constraint failed, trying basic resolution:', e1);
         }
 
-        // 2. Fallback without facingMode (crucial for external desktop USB webcams on Windows)
+        // 2. Fallback without facingMode
         try {
             return await navigator.mediaDevices.getUserMedia({
                 audio: false,
@@ -1073,9 +982,7 @@ class MotionStickCatchApp {
             const stream = await this.getCameraStream();
             this.stream = stream;
 
-            // Target video element for continuous MediaPipe frame decoding (never display:none)
-            const targetVideo = this.dom.mpVideo || this.dom.webcamVideo;
-
+            // Target video element for continuous MediaPipe frame decoding (never display:none; uses opacity: 0.001)
             if (this.dom.mpVideo) {
                 this.dom.mpVideo.srcObject = stream;
                 await this.dom.mpVideo.play().catch(e => console.warn('mpVideo play warning:', e));
@@ -1104,14 +1011,18 @@ class MotionStickCatchApp {
             this.cameraVisible = true;
             this.dom.cameraBox.classList.remove('hidden');
 
-            // Send video frames continuously to MediaPipe Hands via window requestAnimationFrame
+            // Send video frames continuously to MediaPipe Hands via requestAnimationFrame
             let isSendingFrame = false;
             const processVideoFrame = async () => {
                 if (!this.cameraActive) return;
                 try {
-                    if (this.mediaPipeHands && targetVideo && targetVideo.readyState >= 2 && !isSendingFrame) {
+                    const activeVideo = (this.dom.mpVideo && this.dom.mpVideo.readyState >= 2)
+                        ? this.dom.mpVideo
+                        : (this.dom.webcamVideo && this.dom.webcamVideo.readyState >= 2 ? this.dom.webcamVideo : null);
+
+                    if (this.mediaPipeHands && activeVideo && activeVideo.readyState >= 2 && !isSendingFrame) {
                         isSendingFrame = true;
-                        await this.mediaPipeHands.send({ image: targetVideo });
+                        await this.mediaPipeHands.send({ image: activeVideo });
                         isSendingFrame = false;
                     }
                 } catch (e) {
@@ -1129,17 +1040,6 @@ class MotionStickCatchApp {
         } catch (err) {
             console.warn('Webcam initialization failed:', err);
             this.cameraActive = false;
-            if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-                this.cameraError = 'Camera access was blocked. Please click the lock / camera icon in your browser address bar to allow camera access, then click "Retry camera".';
-            } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
-                this.cameraError = 'Camera is currently in use by another app (like Zoom, Teams, or Windows Camera). Please close it and click "Retry camera".';
-            } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-                this.cameraError = 'No camera was found on this device. Please connect a webcam and retry.';
-            } else if (err.name === 'OverconstrainedError') {
-                this.cameraError = 'Camera does not support requested settings. Click to retry.';
-            } else {
-                this.cameraError = err.message || 'Could not start camera. Check connection and retry.';
-            }
             return false;
         }
     }
@@ -1164,177 +1064,112 @@ class MotionStickCatchApp {
         }
         this.dom.cameraBox.classList.add('hidden');
         this.handTracked = false;
-        this.handArmed = false;
     }
 
+    // ========================================================================
+    // HAND TRACKING & COORDINATE RETICLE ENGINE (Spec 4)
+    // ========================================================================
     onHandResults(results) {
-        if (!this.cameraActive || document.hidden || this.inputMode !== 'camera') return;
+        if (!this.cameraActive || document.hidden) return;
         const now = performance.now();
         const rawLandmarks = results.multiHandLandmarks?.[0] || null;
 
-        // Track palm presence: at least 1 valid hand landmark set (minDetectionConfidence >= 0.5)
-        const hasValidLandmarks = !!(
-            rawLandmarks &&
-            rawLandmarks.length === 21 &&
-            rawLandmarks.every(pt => pt && Number.isFinite(pt.x) && Number.isFinite(pt.y))
-        );
-
-        if (hasValidLandmarks) {
+        if (rawLandmarks && rawLandmarks.length === 21 && rawLandmarks.every(pt => pt && Number.isFinite(pt.x) && Number.isFinite(pt.y))) {
+            this.handTracked = true;
             this.lastHandTimestamp = now;
-        }
 
-        const gesture = this.tracker.read(rawLandmarks, now);
+            const lm = rawLandmarks;
+            const wrist = lm[0];
+            const thumbTip = lm[4];
+            const indexTip = lm[8];
 
-        this.handTracked = gesture.tracked;
-        this.handArmed = !!gesture.armed;
+            // Mirrored X and standard Y normalized screen coordinates per spec:
+            // targetX = (1 - (lm[8].x + lm[0].x) / 2) * window.innerWidth;
+            // targetY = ((lm[8].y + lm[0].y) / 2) * window.innerHeight;
+            const normX = 1 - (indexTip.x + wrist.x) / 2;
+            const normY = (indexTip.y + wrist.y) / 2;
 
-        if (gesture.tracked) {
-            // Hand detected: smoothly update reticle position and gesture state
-            this.cursor.x = gesture.x;
-            this.cursor.y = gesture.y;
-            this.cursor.fist = gesture.fist;
-            this.cursor.isGrabbing = !!gesture.grab;
-            this.isFist = !!gesture.fist;
+            // Reach sensitivity multiplier around center so users can comfortably reach all screen bounds
+            const reachMultiplier = 1.3;
+            const targetX = Math.max(15, Math.min(window.innerWidth - 15, ((normX - 0.5) * reachMultiplier + 0.5) * window.innerWidth));
+            const targetY = Math.max(15, Math.min(window.innerHeight - 15, ((normY - 0.5) * reachMultiplier + 0.5) * window.innerHeight));
 
-            if (gesture.grab && this.screen === 'play' && !this.engine.paused) {
-                this.engine.grab(gesture.x, gesture.y);
+            this.cursor.targetX = targetX;
+            this.cursor.targetY = targetY;
+
+            // Check pinch grasp: distance between thumb tip and index tip < 0.08
+            const pinchDist = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y, (thumbTip.z || 0) - (indexTip.z || 0));
+            const isPinch = pinchDist < 0.08;
+
+            // Check fist grasp: finger curls across all 4 fingers
+            let curledCount = 0;
+            for (const [tipIdx, pipIdx] of [[8, 6], [12, 10], [16, 14], [20, 18]]) {
+                const tipDist = Math.hypot(lm[tipIdx].x - wrist.x, lm[tipIdx].y - wrist.y);
+                const pipDist = Math.hypot(lm[pipIdx].x - wrist.x, lm[pipIdx].y - wrist.y);
+                if (tipDist < pipDist * 1.15 || lm[tipIdx].y > lm[pipIdx].y) {
+                    curledCount++;
+                }
+            }
+            const isFist = curledCount >= 3;
+            const isGrabbing = isPinch || isFist;
+
+            const wasGrabbing = this.cursor.isGrabbing;
+            this.cursor.fist = isGrabbing;
+            this.cursor.isGrabbing = isGrabbing;
+            this.isFist = isGrabbing;
+
+            this.updateCanvasCursorFromScreen();
+
+            if (isGrabbing) {
+                if (this.screen === 'play' && !this.engine.paused) {
+                    this.engine.grab(this.cursor.x, this.cursor.y);
+                }
+            } else if (wasGrabbing) {
+                this.engine.cancelGrab();
             }
         } else {
-            // Specification 3: Freeze cursor at last known (x, y) coordinates.
-            // Set isGrabbing to false so it does not falsely catch sticks while frozen.
+            // When tracking is temporarily lost:
+            // FREEZE the hand reticle at its last known (targetX, targetY) coordinates (do NOT snap to center or disappear).
+            // Set isGrabbing = false so it doesn't trigger false catches while frozen.
+            // Resume tracking smoothly as soon as the hand reappears.
+            this.handTracked = false;
             this.cursor.fist = false;
             this.cursor.isGrabbing = false;
             this.isFist = false;
             this.engine.cancelGrab();
         }
 
-        // Always keep cursor reticle visible in gameplay arena
         if (this.screen === 'play') {
             this.cursor.visible = true;
         }
     }
 
     // ========================================================================
-    // CALIBRATION & AUTO-START LOGIC
-    // ========================================================================
-    updateCalibration(timestamp, handPresent) {
-        if (!this.calibrationState) {
-            this.calibrationState = {
-                phase: 'waiting',
-                holdStartTime: null,
-                countdownStartTime: null,
-                currentCount: 3
-            };
-        }
-
-        const STABILITY_REQUIRED = 1.3; // 1.2 to 1.5 seconds continuous detection
-
-        if (this.calibrationState.phase === 'waiting') {
-            if (handPresent) {
-                if (!this.calibrationState.holdStartTime) {
-                    this.calibrationState.holdStartTime = timestamp;
-                }
-
-                const holdSeconds = (timestamp - this.calibrationState.holdStartTime) / 1000;
-
-                if (holdSeconds < STABILITY_REQUIRED) {
-                    // Holding feedback in yellow box
-                    this.dom.readyAutostartTitle.textContent = 'HAND DETECTED! HOLD STEADY...';
-                    this.dom.readyAutostartSub.textContent = 'Keep your hand still to begin countdown...';
-                    this.dom.readyAutostartCount.classList.add('hidden');
-                    this.dom.dockPromptTitle.textContent = 'Hand detected · Hold steady';
-                } else {
-                    // Stability passed: automatically trigger 3-2-1 countdown overlay
-                    this.calibrationState.phase = 'countdown';
-                    this.calibrationState.countdownStartTime = timestamp;
-                    this.calibrationState.currentCount = 3;
-                    sfx.play('drop');
-
-                    this.dom.readyAutostartTitle.textContent = 'HAND DETECTED! STARTING IN...';
-                    this.dom.readyAutostartCount.textContent = '3';
-                    this.dom.readyAutostartCount.classList.remove('hidden');
-                    this.dom.readyAutostartSub.textContent = 'Keep your hand in view. Move to aim, then close your fist!';
-                    this.dom.dockPromptTitle.textContent = 'Starting in 3, 2, 1...';
-                }
-            } else {
-                if (this.calibrationState.holdStartTime) {
-                    // Hand lost before 1.3s stability reached
-                    this.calibrationState.holdStartTime = null;
-                    this.dom.readyAutostartTitle.textContent = 'SHOW ONE HAND TO START';
-                    this.dom.readyAutostartSub.textContent = 'Keep your hand in view. The countdown will begin automatically.';
-                    this.dom.readyAutostartCount.classList.add('hidden');
-                    this.dom.dockPromptTitle.textContent = 'Show one hand to the camera';
-                }
-            }
-        } else if (this.calibrationState.phase === 'countdown') {
-            // Hand lost for > 600ms during countdown resets back to waiting
-            if (!handPresent && (timestamp - this.lastHandTimestamp > 600)) {
-                this.calibrationState.phase = 'waiting';
-                this.calibrationState.holdStartTime = null;
-                this.dom.readyAutostartTitle.textContent = 'HAND LOST — SHOW HAND TO START';
-                this.dom.readyAutostartSub.textContent = 'Keep your hand in view. The countdown will begin automatically.';
-                this.dom.readyAutostartCount.classList.add('hidden');
-                this.dom.dockPromptTitle.textContent = 'Show one hand to the camera';
-                return;
-            }
-
-            const elapsed = (timestamp - this.calibrationState.countdownStartTime) / 1000;
-            const remaining = Math.max(0, 3.0 - elapsed);
-            const count = Math.min(3, Math.max(1, Math.ceil(remaining)));
-
-            if (count !== this.calibrationState.currentCount) {
-                this.calibrationState.currentCount = count;
-                sfx.play('drop');
-                this.dom.readyAutostartCount.classList.remove('sc-pulse');
-                void this.dom.readyAutostartCount.offsetWidth;
-                this.dom.readyAutostartCount.classList.add('sc-pulse');
-            }
-
-            this.dom.readyAutostartTitle.textContent = 'HAND DETECTED! STARTING IN...';
-            this.dom.readyAutostartCount.textContent = String(count);
-            this.dom.readyAutostartCount.classList.remove('hidden');
-            this.dom.readyAutostartSub.textContent = 'Keep your hand in view. Move to aim, then close your fist!';
-            this.dom.dockPromptTitle.textContent = `Starting in ${count}...`;
-
-            if (elapsed >= 3.0) {
-                this.calibrationState.phase = 'started';
-                sfx.play('catch');
-                this.startLevel(1, false);
-            }
-        }
-    }
-
-    // ========================================================================
-    // MAIN GAME LOOP & TIMERS
+    // MAIN GAME LOOP & TIMERS (Continuous gameplay without pausing)
     // ========================================================================
     loop(timestamp) {
         const dt = this.lastFrameTime ? Math.min(0.05, (timestamp - this.lastFrameTime) / 1000) : 0;
         this.lastFrameTime = timestamp;
 
         if (!document.hidden) {
-            const handPresent = this.cameraActive && (timestamp - this.lastHandTimestamp < 350);
-
-            // 1. Ready screen calibration & auto-start
-            if (this.screen === 'ready') {
-                this.updateCalibration(timestamp, handPresent);
+            // Smoothly move reticle towards targetX and targetY every frame
+            if (Number.isFinite(this.cursor.targetX) && Number.isFinite(this.cursor.targetY)) {
+                const lerpAlpha = 0.35;
+                this.cursor.screenX += (this.cursor.targetX - this.cursor.screenX) * lerpAlpha;
+                this.cursor.screenY += (this.cursor.targetY - this.cursor.screenY) * lerpAlpha;
+                this.updateCanvasCursorFromScreen();
             }
 
-            // 2. Pause screen auto-resume timer
-            if (this.engine.paused) {
-                if (this.pauseTimer.update(dt, { requiresHand: true, handPresent, blocked: !!this.cameraError })) {
-                    this.resumeGame();
-                }
-            }
-
-
-            // 4. Results screen progression timer
+            // Results screen progression timer
             if (this.screen === 'over') {
-                if (this.readyTimer.update(dt, { requiresHand: true, handPresent, blocked: false })) {
+                if (this.readyTimer.update(dt)) {
                     this.startLevel(this.engine.nextStage, true);
                 }
             }
 
-            // 5. Update engine physics
+            // Specification 3: CONTINUOUS GAMEPLAY WITHOUT PAUSING
+            // Under NO circumstances should the game freeze, pause, or kick the user out if hand tracking drops or flickers.
+            // Timers, falling sticks, rounds, drop counts, and chances must continue running continuously.
             this.engine.update(dt);
 
             // Sound events on state transitions
@@ -1350,7 +1185,7 @@ class MotionStickCatchApp {
                 this.updateUI();
             }
 
-            // 6. Draw Game Canvas
+            // Draw Game Canvas
             renderScene(this.dom.canvas, this.engine, this.cursor, timestamp, false);
             this.syncDynamicHUD();
         }
@@ -1362,7 +1197,7 @@ class MotionStickCatchApp {
     // UI SYNCHRONIZATION
     // ========================================================================
     syncDynamicHUD() {
-        if (this.screen !== 'play' && this.screen !== 'ready' && this.screen !== 'over') return;
+        if (this.screen !== 'play' && this.screen !== 'over') return;
 
         // Top HUD Numbers
         this.dom.hudScore.textContent = this.engine.score.toLocaleString();
@@ -1374,7 +1209,7 @@ class MotionStickCatchApp {
             dot.classList.toggle('sc-empty', idx >= this.engine.lives);
         });
 
-        // In-Game Toast Banner
+        // In-Game Toast Banner (Countdown and Reaction Feedback)
         if (this.screen === 'play' && !this.engine.paused) {
             this.dom.roundToast.classList.remove('hidden');
             if (this.engine.phase === 'countdown') {
@@ -1400,37 +1235,14 @@ class MotionStickCatchApp {
             this.dom.roundToast.classList.add('hidden');
         }
 
-        // Pause screen countdown status
-        if (this.screen === 'play' && this.engine.paused) {
-            if (this.pauseTimer.phase === 'countdown') {
-                this.dom.pauseAutostartTitle.textContent = 'RESUMING IN';
-                this.dom.pauseAutostartCount.textContent = Math.max(1, Math.ceil(this.pauseTimer.remaining));
-                this.dom.pauseAutostartCount.classList.remove('hidden');
-                this.dom.pauseAutostartSub.classList.add('hidden');
-            } else {
-                this.dom.pauseAutostartTitle.textContent = 'SHOW ONE HAND TO CONTINUE';
-                this.dom.pauseAutostartCount.classList.add('hidden');
-                this.dom.pauseAutostartSub.classList.remove('hidden');
-            }
-        }
-
         // Contextual Console Instructions
         const diffLabel = DIFFICULTIES[this.selectedDifficulty].label;
         this.dom.dockLevelDetails.textContent = `${diffLabel} · 12 drops · 3 chances`;
 
-        if (this.screen === 'over') {
-            if (this.readyTimer.phase === 'countdown') {
-                this.dom.resultCountVal.textContent = Math.max(1, Math.ceil(this.readyTimer.remaining));
-                this.dom.resultCountVal.classList.remove('hidden');
-                this.dom.resultCountSub.textContent = 'Keep your hand ready!';
-            } else {
-                this.dom.resultCountVal.classList.add('hidden');
-                this.dom.resultCountSub.textContent = 'Show one hand or click CONTINUE.';
-            }
-        }
-
         if (!this.handTracked) {
-            this.dom.dockPromptTitle.textContent = 'Show one hand to the camera';
+            this.dom.dockPromptTitle.textContent = this.inputMode === 'mouse' 
+                ? 'Move cursor to aim · Click to catch' 
+                : 'Show one hand to the camera (or use mouse)';
         } else if (this.isFist) {
             this.dom.dockPromptTitle.textContent = 'Open your hand for the next catch';
         } else {
@@ -1441,7 +1253,6 @@ class MotionStickCatchApp {
 
     updateUI() {
         const isMenu = this.screen === 'menu';
-        const isReady = this.screen === 'ready';
         const isPlay = this.screen === 'play';
         const isOver = this.screen === 'over';
         const isPaused = isPlay && this.engine.paused;
@@ -1452,27 +1263,9 @@ class MotionStickCatchApp {
         this.dom.bottomConsole.classList.toggle('hidden', isMenu);
 
         this.dom.screenMenu.classList.toggle('hidden', !isMenu);
-        this.dom.screenReady.classList.toggle('hidden', !isReady);
+        this.dom.screenReady.classList.add('hidden'); // Intermediate calibration screen completely removed
         this.dom.screenPause.classList.toggle('hidden', !isPaused);
         this.dom.screenResult.classList.toggle('hidden', !isOver);
-
-        // Ready Screen specifics matching reference
-        if (isReady) {
-            this.dom.readyCardDesc.textContent = 'Keep your hand in view. Move to aim, then close your fist to catch a falling stick.';
-            if (!this.calibrationState || this.calibrationState.phase === 'waiting') {
-                this.dom.readyAutostartTitle.textContent = 'SHOW ONE HAND TO START';
-                this.dom.readyAutostartCount.classList.add('hidden');
-                this.dom.readyAutostartSub.textContent = 'Keep your hand in view. The countdown will begin automatically.';
-                this.dom.readyAutostartSub.classList.remove('hidden');
-            }
-        }
-
-        // Pause Screen specifics
-        if (isPaused) {
-            const autoActive = this.pauseTimer.phase !== 'idle';
-            this.dom.pauseAutostartBox.classList.toggle('hidden', !autoActive);
-            this.dom.resumeGameBtn.classList.toggle('hidden', autoActive);
-        }
 
         // Results Screen specifics
         if (isOver) {
